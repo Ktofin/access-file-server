@@ -1,5 +1,6 @@
 # server.py
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+from fastapi.responses import HTMLResponse  # ← ЭТОТ ИМПОРТ БЫЛ ПРОПУЩЕН!
 from pydantic import BaseModel
 from typing import Dict, List
 import uvicorn
