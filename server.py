@@ -2,7 +2,7 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, FileResponse
 from pydantic import BaseModel
-from typing import Dict, List
+from typing import Dict, List, Optional
 import uvicorn
 import uuid
 import os
@@ -39,6 +39,7 @@ class ClientStatus(BaseModel):
     ip: str
     vnc_port: int
     vnc_status: str
+    device_type: str  # ← добавлено
 
 # Эндпоинты
 @app.post("/command/scan", response_model=CommandResponse)
@@ -91,6 +92,7 @@ async def receive_client_status(status: ClientStatus):
         "ip": status.ip,
         "vnc_port": status.vnc_port,
         "vnc_status": status.vnc_status,
+        "device_type": status.device_type,
         "last_seen": datetime.now().isoformat()
     }
     return {"status": "ok"}
@@ -209,6 +211,11 @@ async def main_page():
                 }
                 .status-ok { color: #27ae60; }
                 .status-down { color: #e74c3c; }
+                .device-type {
+                    font-size: 13px;
+                    color: #8e44ad;
+                    font-weight: bold;
+                }
             </style>
         </head>
         <body>
@@ -245,6 +252,7 @@ async def main_page():
                         div.className = 'client-card';
                         div.innerHTML = `
                             <h3>🖥️ ${clientId}</h3>
+                            <p class="device-type">Тип устройства: ${info.device_type || "не указан"}</p>
                             <p>
                                 <strong>IP для VNC:</strong> 
                                 <span class="vnc-address" id="vnc-${clientId}">${vncAddr}</span>
@@ -276,10 +284,22 @@ async def main_page():
                     const res = await fetch(`/client/${clientId}/files`);
                     const data = await res.json();
 
+                    // Получаем тип устройства
+                    const clientsRes = await fetch('/api/clients');
+                    const clientsData = await clientsRes.json();
+                    const devType = clientsData.clients[clientId]?.device_type || "неизвестен";
+
+                    let scanLabel = "файлы";
+                    if (devType.includes("Nuvision")) scanLabel = "файлы Access (.accdb, .mdb)";
+                    else if (devType.includes("Toshiba")) scanLabel = "архивы (.gz)";
+                    else if (devType === "GE") scanLabel = "логи (.log)";
+
                     if (data.files.length === 0) {
                         filesDiv.innerHTML = `
                             <p>Файлов пока нет.</p>
-                            <button class="btn btn-primary" onclick="requestScan('${clientId}')">🔍 Запросить список файлов Access</button>
+                            <button class="btn btn-primary" onclick="requestScan('${clientId}')">
+                                🔍 Запросить список ${scanLabel}
+                            </button>
                         `;
                     } else {
                         filesDiv.innerHTML = data.files.map(f => `
