@@ -1,6 +1,7 @@
 # server.py
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Dict, List, Optional
 import uvicorn
@@ -10,6 +11,15 @@ from datetime import datetime
 import json
 
 app = FastAPI(title="Access File Transfer Server")
+
+# Настройка CORS для всех запросов
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Разрешаем все источники
+    allow_credentials=True,
+    allow_methods=["*"],  # Разрешаем все методы
+    allow_headers=["*"],  # Разрешаем все заголовки
+)
 
 # Папка для сохранения файлов
 uploaded_files_dir = "uploaded_files"
@@ -367,7 +377,7 @@ async def main_page():
                 <div class="header">
                     <h1>📁 Access File Transfer — Центр управления</h1>
                     <div>
-                        <button class="btn btn-refresh" onclick="refreshAll()">🔄 Обновить</button>
+                        <button class="btn btn-refresh" id="refreshBtn">🔄 Обновить</button>
                         <button class="btn btn-primary" onclick="window.open('/api/debug', '_blank')" style="margin-left:8px;">🔍 Отладка</button>
                     </div>
                 </div>
@@ -388,7 +398,8 @@ async def main_page():
                 function organizeFilesIntoTree(files) {
                     const tree = {};
                     files.forEach(file => {
-                        const parts = file.filepath.split(/[\/\\]/);
+                       
+                        const parts = file.filepath.replace(/\\\/g, '/').split('/'); // ← ИСПРАВЛЕНО
                         let current = tree;
                         for (let i = 0; i < parts.length; i++) {
                             const part = parts[i];
@@ -448,7 +459,7 @@ async def main_page():
                             const fileDiv = document.createElement('div');
                             fileDiv.className = 'file-item';
                             fileDiv.style.paddingLeft = (level * 20 + 12) + 'px';
-                            const fileName = file.filepath.split(/[\/\\]/).pop();
+                            const fileName = file.filepath.replace(/\\\/g, '/').split('/').pop();
                             fileDiv.innerHTML = `
                                 <div class="file-info">
                                     <div class="file-path">📄 ${fileName}</div>
@@ -505,8 +516,13 @@ async def main_page():
                             div.className = 'client-card';
                             
                             // Экранируем специальные символы для безопасности
-                            const safeClientId = clientId.replace(/'/g, "\\'");
-                            const safeIp = (info.ip || 'неизвестно').replace(/'/g, "\\'");
+                            function escapeForHtml(str) {
+                                if (!str) return '';
+                                const s = String(str);
+                                return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+                            }
+                            const safeClientId = escapeForHtml(clientId);
+                            const safeIp = escapeForHtml(info.ip || 'неизвестно');
                             const lastSeen = info.last_seen ? new Date(info.last_seen).toLocaleString() : 'никогда';
                             
                             div.innerHTML = `
@@ -537,7 +553,8 @@ async def main_page():
                     } catch (e) {
                         console.error('Ошибка загрузки клиентов:', e);
                         const container = document.getElementById('clientsList');
-                        container.innerHTML = '<p style="text-align:center; color:#e74c3c;">Ошибка загрузки клиентов: ' + e.message + '</p>';
+                        const errorMsg = e.message || String(e);
+                        container.innerHTML = '<p style="text-align:center; color:#e74c3c;">Ошибка загрузки клиентов: ' + errorMsg.replace(/'/g, "\\'") + '</p>';
                     }
                 }
 
@@ -758,8 +775,8 @@ async def main_page():
                         const res = await fetch(`/client/${clientId}/config`);
                         const config = await res.json();
                         
-                        const patternsText = config.search_patterns.join('\n');
-                        const directoriesText = config.search_directories.join('\n');
+                        const patternsText = config.search_patterns.join('\\n');
+                        const directoriesText = config.search_directories.join('\\n');
                         
                         configDiv.innerHTML = `
                             <h4>⚙️ Конфигурация поиска файлов</h4>
@@ -791,8 +808,8 @@ async def main_page():
                 }
 
                 async function saveConfig(clientId) {
-                    const patterns = document.getElementById(`patterns-${clientId}`).value.split('\n').filter(p => p.trim());
-                    const directories = document.getElementById(`directories-${clientId}`).value.split('\n').filter(d => d.trim());
+                    const patterns = document.getElementById(`patterns-${clientId}`).value.split('\\n').filter(p => p.trim());
+                    const directories = document.getElementById(`directories-${clientId}`).value.split('\\n').filter(d => d.trim());
                     const maxSize = parseInt(document.getElementById(`maxsize-${clientId}`).value);
                     const interval = parseInt(document.getElementById(`interval-${clientId}`).value);
 
@@ -841,9 +858,25 @@ async def main_page():
                     console.error('JavaScript ошибка:', e.error);
                     const container = document.getElementById('clientsList');
                     if (container) {
-                        container.innerHTML = '<p style="text-align:center; color:#e74c3c;">Ошибка JavaScript: ' + e.message + '</p>';
+                        const errorMsg = (e.message || String(e.error || e)).replace(/'/g, "\\'");
+                        container.innerHTML = '<p style="text-align:center; color:#e74c3c;">Ошибка JavaScript: ' + errorMsg + '</p>';
                     }
                 });
+
+                // Привязываем кнопку обновления после загрузки DOM
+                if (document.readyState === 'loading') {
+                    document.addEventListener('DOMContentLoaded', function() {
+                        const refreshBtn = document.getElementById('refreshBtn');
+                        if (refreshBtn) {
+                            refreshBtn.addEventListener('click', window.refreshAll);
+                        }
+                    });
+                } else {
+                    const refreshBtn = document.getElementById('refreshBtn');
+                    if (refreshBtn) {
+                        refreshBtn.addEventListener('click', window.refreshAll);
+                    }
+                }
 
                 // Загрузка при старте
                 console.log('Инициализация страницы...');
