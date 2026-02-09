@@ -37,9 +37,6 @@ class CommandResponse(BaseModel):
 class ClientStatus(BaseModel):
     client_id: str
     ip: str
-    vnc_port: int
-    vnc_status: str
-    device_type: str  # ← добавлено
 
 # Эндпоинты
 @app.post("/command/scan", response_model=CommandResponse)
@@ -90,9 +87,6 @@ async def get_all_clients():
 async def receive_client_status(status: ClientStatus):
     clients_registry[status.client_id] = {
         "ip": status.ip,
-        "vnc_port": status.vnc_port,
-        "vnc_status": status.vnc_status,
-        "device_type": status.device_type,
         "last_seen": datetime.now().isoformat()
     }
     return {"status": "ok"}
@@ -172,14 +166,6 @@ async def main_page():
                     display: flex;
                     align-items: center;
                 }
-                .vnc-address {
-                    background: #f1f1f1;
-                    padding: 6px 10px;
-                    border-radius: 4px;
-                    font-family: monospace;
-                    display: inline-block;
-                    margin-right: 8px;
-                }
                 .btn {
                     padding: 6px 12px;
                     margin: 4px;
@@ -211,11 +197,6 @@ async def main_page():
                 }
                 .status-ok { color: #27ae60; }
                 .status-down { color: #e74c3c; }
-                .device-type {
-                    font-size: 13px;
-                    color: #8e44ad;
-                    font-weight: bold;
-                }
             </style>
         </head>
         <body>
@@ -244,36 +225,16 @@ async def main_page():
 
                     container.innerHTML = '';
                     for (const [clientId, info] of Object.entries(data.clients)) {
-                        const vncAddr = `${info.ip}:${info.vnc_port}`;
-                        const statusClass = info.vnc_status === "running" ? "status-ok" : "status-down";
-                        const statusText = info.vnc_status === "running" ? "✅ VNC работает" : "❌ VNC не отвечает";
-
                         const div = document.createElement('div');
                         div.className = 'client-card';
                         div.innerHTML = `
                             <h3>🖥️ ${clientId}</h3>
-                            <p class="device-type">Тип устройства: ${info.device_type || "не указан"}</p>
-                            <p>
-                                <strong>IP для VNC:</strong> 
-                                <span class="vnc-address" id="vnc-${clientId}">${vncAddr}</span>
-                                <button class="btn btn-primary" onclick="copyVNC('${clientId}')">📋 Копировать</button>
-                            </p>
-                            <p><span class="${statusClass}">${statusText}</span></p>
+                            <p><strong>IP адрес:</strong> ${info.ip}</p>
+                            <p><strong>Последний раз видели:</strong> ${new Date(info.last_seen).toLocaleString()}</p>
                             <button class="btn btn-success" onclick="showFiles('${clientId}')">📂 Показать файлы</button>
                             <div id="files-${clientId}" class="files-section" style="display:none;"></div>
                         `;
                         container.appendChild(div);
-                    }
-                }
-
-                function copyVNC(clientId) {
-                    const el = document.getElementById(`vnc-${clientId}`);
-                    if (el) {
-                        navigator.clipboard.writeText(el.innerText).then(() => {
-                            alert(`Скопировано: ${el.innerText}`);
-                        }).catch(() => {
-                            alert('Не удалось скопировать. Выделите и скопируйте вручную.');
-                        });
                     }
                 }
 
@@ -284,21 +245,11 @@ async def main_page():
                     const res = await fetch(`/client/${clientId}/files`);
                     const data = await res.json();
 
-                    // Получаем тип устройства
-                    const clientsRes = await fetch('/api/clients');
-                    const clientsData = await clientsRes.json();
-                    const devType = clientsData.clients[clientId]?.device_type || "неизвестен";
-
-                    let scanLabel = "файлы";
-                    if (devType.includes("Nuvision")) scanLabel = "файлы Access (.accdb, .mdb)";
-                    else if (devType.includes("Toshiba")) scanLabel = "архивы (.gz)";
-                    else if (devType === "GE") scanLabel = "логи (.log)";
-
                     if (data.files.length === 0) {
                         filesDiv.innerHTML = `
                             <p>Файлов пока нет.</p>
                             <button class="btn btn-primary" onclick="requestScan('${clientId}')">
-                                🔍 Запросить список ${scanLabel}
+                                🔍 Запросить поиск файлов
                             </button>
                         `;
                     } else {
