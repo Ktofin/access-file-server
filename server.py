@@ -20,6 +20,7 @@ pending_commands: Dict[str, List[dict]] = {}
 client_files: Dict[str, List[dict]] = {}
 uploaded_files_metadata: List[dict] = []
 clients_registry: Dict[str, dict] = {}
+client_configs: Dict[str, dict] = {}  # Конфигурации клиентов для поиска файлов
 
 # Модели
 class ScanCommand(BaseModel):
@@ -29,6 +30,12 @@ class UploadCommand(BaseModel):
     client_id: str
     filepath: str
 
+class RebootCommand(BaseModel):
+    client_id: str
+
+class ShutdownCommand(BaseModel):
+    client_id: str
+
 class CommandResponse(BaseModel):
     command_id: str
     type: str
@@ -37,6 +44,13 @@ class CommandResponse(BaseModel):
 class ClientStatus(BaseModel):
     client_id: str
     ip: str
+
+class ClientConfig(BaseModel):
+    client_id: str
+    search_patterns: List[str]
+    search_directories: List[str]
+    max_file_size_mb: int
+    scan_interval: int = 5
 
 # Эндпоинты
 @app.post("/command/scan", response_model=CommandResponse)
@@ -52,6 +66,20 @@ async def create_upload_command(cmd: UploadCommand):
     new_command = {"command_id": command_id, "type": "upload", "filepath": cmd.filepath, "status": "pending"}
     pending_commands.setdefault(cmd.client_id, []).append(new_command)
     return CommandResponse(command_id=command_id, type="upload", status="pending")
+
+@app.post("/command/reboot", response_model=CommandResponse)
+async def create_reboot_command(cmd: RebootCommand):
+    command_id = str(uuid.uuid4())
+    new_command = {"command_id": command_id, "type": "reboot", "status": "pending"}
+    pending_commands.setdefault(cmd.client_id, []).append(new_command)
+    return CommandResponse(command_id=command_id, type="reboot", status="pending")
+
+@app.post("/command/shutdown", response_model=CommandResponse)
+async def create_shutdown_command(cmd: ShutdownCommand):
+    command_id = str(uuid.uuid4())
+    new_command = {"command_id": command_id, "type": "shutdown", "status": "pending"}
+    pending_commands.setdefault(cmd.client_id, []).append(new_command)
+    return CommandResponse(command_id=command_id, type="shutdown", status="pending")
 
 @app.get("/commands/{client_id}")
 async def get_commands(client_id: str):
@@ -90,6 +118,31 @@ async def receive_client_status(status: ClientStatus):
         "last_seen": datetime.now().isoformat()
     }
     return {"status": "ok"}
+
+@app.get("/client/{client_id}/config")
+async def get_client_config(client_id: str):
+    """Получение конфигурации клиента с сервера"""
+    if client_id not in client_configs:
+        # Возвращаем конфигурацию по умолчанию
+        default_config = {
+            "search_patterns": ["*.log", "*.txt", "*.json"],
+            "search_directories": ["all"],
+            "max_file_size_mb": 100,
+            "scan_interval": 5
+        }
+        return default_config
+    return client_configs[client_id]
+
+@app.post("/client/{client_id}/config")
+async def set_client_config(client_id: str, config: ClientConfig):
+    """Установка конфигурации клиента на сервере"""
+    client_configs[client_id] = {
+        "search_patterns": config.search_patterns,
+        "search_directories": config.search_directories,
+        "max_file_size_mb": config.max_file_size_mb,
+        "scan_interval": config.scan_interval
+    }
+    return {"status": "ok", "message": "Конфигурация сохранена"}
 
 @app.get("/api/downloaded-files")
 async def get_downloaded_files():
@@ -149,9 +202,27 @@ async def main_page():
         <head>
             <title>📁 Access File Transfer — Центр управления</title>
             <style>
-                body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: #f9f9f9; }
-                .container { max-width: 1000px; margin: 0 auto; }
-                h1 { text-align: center; color: #2c3e50; }
+                * { box-sizing: border-box; }
+                body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }
+                .container { max-width: 1400px; margin: 0 auto; }
+                .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+                h1 { margin: 0; color: #2c3e50; }
+                .btn {
+                    padding: 8px 16px;
+                    margin: 4px;
+                    border: none;
+                    border-radius: 4px;
+                    cursor: pointer;
+                    font-size: 14px;
+                    transition: all 0.2s;
+                }
+                .btn:hover { opacity: 0.9; transform: translateY(-1px); }
+                .btn-primary { background: #3498db; color: white; }
+                .btn-success { background: #2ecc71; color: white; }
+                .btn-danger { background: #e74c3c; color: white; }
+                .btn-warning { background: #f39c12; color: white; }
+                .btn-download { background: #27ae60; color: white; }
+                .btn-refresh { background: #95a5a6; color: white; }
                 .client-card {
                     background: white;
                     border: 1px solid #ddd;
@@ -160,51 +231,125 @@ async def main_page():
                     margin: 12px 0;
                     box-shadow: 0 2px 4px rgba(0,0,0,0.05);
                 }
-                .client-card h3 {
-                    margin-top: 0;
-                    color: #2980b9;
+                .client-header {
                     display: flex;
+                    justify-content: space-between;
                     align-items: center;
+                    margin-bottom: 12px;
+                    padding-bottom: 12px;
+                    border-bottom: 2px solid #ecf0f1;
                 }
-                .btn {
-                    padding: 6px 12px;
-                    margin: 4px;
-                    border: none;
-                    border-radius: 4px;
-                    cursor: pointer;
-                    font-size: 14px;
+                .client-info { flex: 1; }
+                .client-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+                .client-card h3 {
+                    margin: 0 0 8px 0;
+                    color: #2980b9;
                 }
-                .btn-primary { background: #3498db; color: white; }
-                .btn-success { background: #2ecc71; color: white; }
-                .btn-download { background: #27ae60; color: white; }
+                .client-meta {
+                    font-size: 13px;
+                    color: #7f8c8d;
+                    margin: 4px 0;
+                }
                 .files-section {
-                    margin-top: 12px;
-                    padding-top: 12px;
+                    margin-top: 16px;
+                    padding-top: 16px;
                     border-top: 1px dashed #eee;
                 }
+                .file-explorer {
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                    background: #fafafa;
+                    max-height: 500px;
+                    overflow-y: auto;
+                    padding: 8px;
+                }
+                .folder-item {
+                    padding: 6px 8px;
+                    cursor: pointer;
+                    border-radius: 3px;
+                    margin: 2px 0;
+                    display: flex;
+                    align-items: center;
+                    user-select: none;
+                }
+                .folder-item:hover { background: #e8f4f8; }
+                .folder-item.expanded { background: #d5e8f4; }
+                .folder-icon { margin-right: 6px; font-size: 16px; }
                 .file-item {
-                    padding: 8px 0;
-                    border-bottom: 1px solid #f5f5f5;
+                    padding: 8px 12px;
+                    border-bottom: 1px solid #f0f0f0;
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    background: white;
+                    margin: 2px 0;
+                    border-radius: 3px;
+                }
+                .file-item:hover { background: #f9f9f9; }
+                .file-info {
+                    flex: 1;
+                    min-width: 0;
                 }
                 .file-path {
-                    font-family: monospace;
-                    font-size: 14px;
+                    font-family: 'Consolas', 'Monaco', monospace;
+                    font-size: 13px;
                     word-break: break-all;
+                    color: #2c3e50;
                 }
                 .file-meta {
-                    font-size: 12px;
-                    color: #7f8c8d;
+                    font-size: 11px;
+                    color: #95a5a6;
+                    margin-top: 4px;
                 }
-                .status-ok { color: #27ae60; }
-                .status-down { color: #e74c3c; }
+                .file-actions {
+                    display: flex;
+                    gap: 6px;
+                    margin-left: 12px;
+                }
+                .empty-state {
+                    text-align: center;
+                    padding: 40px;
+                    color: #95a5a6;
+                }
+                .downloaded-files {
+                    margin-top: 30px;
+                }
+                .search-box {
+                    margin: 12px 0;
+                    padding: 8px 12px;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                    font-size: 14px;
+                    width: 100%;
+                    max-width: 400px;
+                }
+                .search-box:focus {
+                    outline: none;
+                    border-color: #3498db;
+                }
+                .file-item.hidden {
+                    display: none;
+                }
+                .folder-item.hidden {
+                    display: none;
+                }
+                .no-results {
+                    padding: 20px;
+                    text-align: center;
+                    color: #95a5a6;
+                }
             </style>
         </head>
         <body>
             <div class="container">
-                <h1>📁 Access File Transfer — Центр управления</h1>
+                <div class="header">
+                    <h1>📁 Access File Transfer — Центр управления</h1>
+                    <button class="btn btn-refresh" onclick="refreshAll()">🔄 Обновить</button>
+                </div>
+                
                 <div id="clientsList"></div>
 
-                <div class="client-card">
+                <div class="client-card downloaded-files">
                     <h3>⬇️ Загруженные файлы</h3>
                     <div id="downloadedFilesContainer">
                         <p>Нет загруженных файлов.</p>
@@ -213,6 +358,86 @@ async def main_page():
             </div>
 
             <script>
+                function organizeFilesIntoTree(files) {
+                    const tree = {};
+                    files.forEach(file => {
+                        const parts = file.filepath.split(/[/\\\\]/);
+                        let current = tree;
+                        for (let i = 0; i < parts.length; i++) {
+                            const part = parts[i];
+                            if (i === parts.length - 1) {
+                                // Это файл
+                                if (!current._files) current._files = [];
+                                current._files.push(file);
+                            } else {
+                                // Это папка
+                                if (!current[part]) {
+                                    current[part] = {};
+                                }
+                                current = current[part];
+                            }
+                        }
+                    });
+                    return tree;
+                }
+
+                function renderFileTree(tree, parentElement, clientId, level = 0) {
+                    const keys = Object.keys(tree).filter(k => k !== '_files');
+                    const hasFiles = tree._files && tree._files.length > 0;
+                    
+                    if (keys.length === 0 && !hasFiles) return;
+
+                    keys.forEach(key => {
+                        const folderDiv = document.createElement('div');
+                        folderDiv.className = 'folder-item';
+                        folderDiv.style.paddingLeft = (level * 20 + 8) + 'px';
+                        folderDiv.innerHTML = `<span class="folder-icon">📁</span><span>${key}</span>`;
+                        
+                        const subTree = document.createElement('div');
+                        subTree.style.display = 'none';
+                        subTree.style.marginLeft = '20px';
+                        
+                        folderDiv.onclick = function(e) {
+                            e.stopPropagation();
+                            const isExpanded = folderDiv.classList.contains('expanded');
+                            if (isExpanded) {
+                                folderDiv.classList.remove('expanded');
+                                subTree.style.display = 'none';
+                                folderDiv.querySelector('.folder-icon').textContent = '📁';
+                            } else {
+                                folderDiv.classList.add('expanded');
+                                subTree.style.display = 'block';
+                                folderDiv.querySelector('.folder-icon').textContent = '📂';
+                            }
+                        };
+                        
+                        parentElement.appendChild(folderDiv);
+                        parentElement.appendChild(subTree);
+                        renderFileTree(tree[key], subTree, clientId, level + 1);
+                    });
+
+                    if (hasFiles) {
+                        tree._files.forEach(file => {
+                            const fileDiv = document.createElement('div');
+                            fileDiv.className = 'file-item';
+                            fileDiv.style.paddingLeft = (level * 20 + 12) + 'px';
+                            const fileName = file.filepath.split(/[/\\\\]/).pop();
+                            fileDiv.innerHTML = `
+                                <div class="file-info">
+                                    <div class="file-path">📄 ${fileName}</div>
+                                    <div class="file-meta">${file.filepath} | Найден: ${new Date(file.reported_at).toLocaleString()}</div>
+                                </div>
+                                <div class="file-actions">
+                                    <button class="btn btn-success" onclick="uploadFile('${clientId}', '${encodeURIComponent(file.filepath)}')" style="font-size:12px; padding:4px 8px;">
+                                        📤 Загрузить
+                                    </button>
+                                </div>
+                            `;
+                            parentElement.appendChild(fileDiv);
+                        });
+                    }
+                }
+
                 async function loadAllClients() {
                     const res = await fetch('/api/clients');
                     const data = await res.json();
@@ -228,62 +453,205 @@ async def main_page():
                         const div = document.createElement('div');
                         div.className = 'client-card';
                         div.innerHTML = `
-                            <h3>🖥️ ${clientId}</h3>
-                            <p><strong>IP адрес:</strong> ${info.ip}</p>
-                            <p><strong>Последний раз видели:</strong> ${new Date(info.last_seen).toLocaleString()}</p>
-                            <button class="btn btn-success" onclick="showFiles('${clientId}')">📂 Показать файлы</button>
+                            <div class="client-header">
+                                <div class="client-info">
+                                    <h3>🖥️ ${clientId}</h3>
+                                    <div class="client-meta">
+                                        <strong>IP:</strong> ${info.ip} | 
+                                        <strong>Последний раз видели:</strong> ${new Date(info.last_seen).toLocaleString()}
+                                    </div>
+                                </div>
+                                <div class="client-actions">
+                                    <button class="btn btn-primary" onclick="requestScan('${clientId}')">🔍 Сканировать</button>
+                                    <button class="btn btn-success" onclick="showFiles('${clientId}')">📂 Файлы</button>
+                                    <button class="btn btn-primary" onclick="showConfig('${clientId}')">⚙️ Настройки</button>
+                                    <button class="btn btn-warning" onclick="rebootClient('${clientId}')">🔄 Перезагрузить</button>
+                                    <button class="btn btn-danger" onclick="shutdownClient('${clientId}')">⏻ Выключить</button>
+                                </div>
+                                <div id="config-${clientId}" class="files-section" style="display:none;"></div>
+                            </div>
                             <div id="files-${clientId}" class="files-section" style="display:none;"></div>
                         `;
                         container.appendChild(div);
                     }
                 }
 
+                let currentFilesData = {}; // Храним данные файлов для каждого клиента
+
+                function filterFileTree(searchTerm, clientId) {
+                    const explorer = document.getElementById(`explorer-${clientId}`);
+                    if (!explorer) return;
+                    
+                    const term = searchTerm.toLowerCase();
+                    const allItems = explorer.querySelectorAll('.file-item, .folder-item');
+                    
+                    if (!term) {
+                        // Показываем все, если поиск пустой
+                        allItems.forEach(item => {
+                            item.classList.remove('hidden');
+                            // Раскрываем все папки при очистке поиска
+                            if (item.classList.contains('folder-item')) {
+                                const subTree = item.nextElementSibling;
+                                if (subTree && subTree.style.display === 'none') {
+                                    item.click();
+                                }
+                            }
+                        });
+                        return;
+                    }
+                    
+                    // Скрываем все сначала
+                    allItems.forEach(item => item.classList.add('hidden'));
+                    
+                    // Показываем совпадающие файлы и их родительские папки
+                    allItems.forEach(item => {
+                        if (item.classList.contains('file-item')) {
+                            const filePath = item.querySelector('.file-path')?.textContent || '';
+                            const fileMeta = item.querySelector('.file-meta')?.textContent || '';
+                            if (filePath.toLowerCase().includes(term) || fileMeta.toLowerCase().includes(term)) {
+                                item.classList.remove('hidden');
+                                // Раскрываем родительские папки
+                                let parent = item.parentElement;
+                                while (parent && parent !== explorer) {
+                                    const folder = parent.previousElementSibling;
+                                    if (folder && folder.classList.contains('folder-item')) {
+                                        folder.classList.remove('hidden');
+                                        const subTree = folder.nextElementSibling;
+                                        if (subTree) {
+                                            subTree.style.display = 'block';
+                                            folder.classList.add('expanded');
+                                            folder.querySelector('.folder-icon').textContent = '📂';
+                                        }
+                                    }
+                                    parent = parent.parentElement;
+                                }
+                            }
+                        } else if (item.classList.contains('folder-item')) {
+                            const folderName = item.textContent.toLowerCase();
+                            if (folderName.includes(term)) {
+                                item.classList.remove('hidden');
+                                // Раскрываем папку
+                                const subTree = item.nextElementSibling;
+                                if (subTree) {
+                                    subTree.style.display = 'block';
+                                    item.classList.add('expanded');
+                                    item.querySelector('.folder-icon').textContent = '📂';
+                                }
+                            }
+                        }
+                    });
+                    
+                    // Проверяем, есть ли результаты
+                    const visibleItems = explorer.querySelectorAll('.file-item:not(.hidden), .folder-item:not(.hidden)');
+                    const noResults = explorer.querySelector('.no-results');
+                    if (visibleItems.length === 0 && !noResults) {
+                        const noResultsDiv = document.createElement('div');
+                        noResultsDiv.className = 'no-results';
+                        noResultsDiv.textContent = 'Ничего не найдено';
+                        explorer.appendChild(noResultsDiv);
+                    } else if (noResults && visibleItems.length > 0) {
+                        noResults.remove();
+                    }
+                }
+
                 async function showFiles(clientId) {
                     const filesDiv = document.getElementById(`files-${clientId}`);
+                    const isVisible = filesDiv.style.display !== 'none';
+                    
+                    if (isVisible) {
+                        filesDiv.style.display = 'none';
+                        return;
+                    }
+                    
                     filesDiv.style.display = 'block';
+                    filesDiv.innerHTML = '<div class="empty-state">Загрузка файлов...</div>';
 
                     const res = await fetch(`/client/${clientId}/files`);
                     const data = await res.json();
+                    currentFilesData[clientId] = data.files;
 
                     if (data.files.length === 0) {
                         filesDiv.innerHTML = `
-                            <p>Файлов пока нет.</p>
-                            <button class="btn btn-primary" onclick="requestScan('${clientId}')">
-                                🔍 Запросить поиск файлов
-                            </button>
-                        `;
-                    } else {
-                        filesDiv.innerHTML = data.files.map(f => `
-                            <div class="file-item">
-                                <div class="file-path">${f.filepath}</div>
-                                <div class="file-meta">Найден: ${new Date(f.reported_at).toLocaleString()}</div>
-                                <button class="btn btn-success" onclick="uploadFile('${clientId}', '${encodeURIComponent(f.filepath)}')" style="margin-top:6px;">
-                                    📤 Загрузить на сервер
+                            <div class="empty-state">
+                                <p>Файлов пока нет.</p>
+                                <button class="btn btn-primary" onclick="requestScan('${clientId}')">
+                                    🔍 Запросить поиск файлов
                                 </button>
                             </div>
-                        `).join('');
+                        `;
+                    } else {
+                        filesDiv.innerHTML = `
+                            <input type="text" 
+                                   class="search-box" 
+                                   id="search-${clientId}" 
+                                   placeholder="🔍 Поиск файлов..." 
+                                   oninput="filterFileTree(this.value, '${clientId}')">
+                            <div class="file-explorer" id="explorer-${clientId}"></div>
+                        `;
+                        
+                        const explorer = document.getElementById(`explorer-${clientId}`);
+                        
+                        // Организуем файлы в дерево
+                        const tree = organizeFilesIntoTree(data.files);
+                        renderFileTree(tree, explorer, clientId);
                     }
                 }
 
                 async function requestScan(clientId) {
-                    await fetch('/command/scan', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({client_id: clientId})
-                    });
-                    alert('Команда на поиск файлов отправлена. Обновление через 6 сек...');
-                    setTimeout(() => showFiles(clientId), 6000);
+                    if (!confirm(`Запросить поиск файлов у устройства ${clientId}?`)) return;
+                    try {
+                        await fetch('/command/scan', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({client_id: clientId})
+                        });
+                        alert('Команда на поиск файлов отправлена. Обновите через несколько секунд.');
+                    } catch (e) {
+                        alert('Ошибка отправки команды: ' + e.message);
+                    }
+                }
+
+                async function rebootClient(clientId) {
+                    if (!confirm(`⚠️ ВНИМАНИЕ! Перезагрузить устройство ${clientId}?`)) return;
+                    try {
+                        await fetch('/command/reboot', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({client_id: clientId})
+                        });
+                        alert('Команда на перезагрузку отправлена.');
+                    } catch (e) {
+                        alert('Ошибка отправки команды: ' + e.message);
+                    }
+                }
+
+                async function shutdownClient(clientId) {
+                    if (!confirm(`⚠️ ВНИМАНИЕ! Выключить устройство ${clientId}? Это действие нельзя отменить!`)) return;
+                    try {
+                        await fetch('/command/shutdown', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({client_id: clientId})
+                        });
+                        alert('Команда на выключение отправлена.');
+                    } catch (e) {
+                        alert('Ошибка отправки команды: ' + e.message);
+                    }
                 }
 
                 async function uploadFile(clientId, filepath) {
                     if (!confirm("Загрузить этот файл на сервер?")) return;
-                    await fetch('/command/upload', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({client_id: clientId, filepath: decodeURIComponent(filepath)})
-                    });
-                    alert("Команда загрузки создана.");
-                    loadDownloadedFiles();
+                    try {
+                        await fetch('/command/upload', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({client_id: clientId, filepath: decodeURIComponent(filepath)})
+                        });
+                        alert("Команда загрузки создана.");
+                        loadDownloadedFiles();
+                    } catch (e) {
+                        alert('Ошибка отправки команды: ' + e.message);
+                    }
                 }
 
                 async function loadDownloadedFiles() {
@@ -295,25 +663,105 @@ async def main_page():
                     } else {
                         container.innerHTML = data.files.map(f => `
                             <div class="file-item">
-                                <div><strong>${f.filename}</strong> (${(f.size / 1024).toFixed(1)} КБ)</div>
-                                <div class="file-meta">С компьютера: ${f.client_id} | ${new Date(f.uploaded_at).toLocaleString()}</div>
-                                <button class="btn btn-download" onclick="location.href='/download/${f.command_id}'" style="margin-top:6px;">
-                                    ⬇️ Скачать
-                                </button>
+                                <div class="file-info">
+                                    <div class="file-path"><strong>${f.filename}</strong> (${(f.size / 1024).toFixed(1)} КБ)</div>
+                                    <div class="file-meta">С компьютера: ${f.client_id} | ${new Date(f.uploaded_at).toLocaleString()}</div>
+                                </div>
+                                <div class="file-actions">
+                                    <button class="btn btn-download" onclick="location.href='/download/${f.command_id}'">
+                                        ⬇️ Скачать
+                                    </button>
+                                </div>
                             </div>
                         `).join('');
                     }
                 }
 
-                // Загрузка при старте
-                loadAllClients();
-                loadDownloadedFiles();
+                async function showConfig(clientId) {
+                    const configDiv = document.getElementById(`config-${clientId}`);
+                    const isVisible = configDiv.style.display !== 'none';
+                    
+                    if (isVisible) {
+                        configDiv.style.display = 'none';
+                        return;
+                    }
+                    
+                    configDiv.style.display = 'block';
+                    configDiv.innerHTML = '<div class="empty-state">Загрузка конфигурации...</div>';
 
-                // Автообновление каждые 12 сек
-                setInterval(() => {
+                    try {
+                        const res = await fetch(`/client/${clientId}/config`);
+                        const config = await res.json();
+                        
+                        const patternsText = config.search_patterns.join('\n');
+                        const directoriesText = config.search_directories.join('\n');
+                        
+                        configDiv.innerHTML = `
+                            <h4>⚙️ Конфигурация поиска файлов</h4>
+                            <div style="background: #f9f9f9; padding: 16px; border-radius: 4px; margin-top: 12px;">
+                                <div style="margin-bottom: 12px;">
+                                    <label><strong>Паттерны поиска:</strong></label>
+                                    <textarea id="patterns-${clientId}" style="width: 100%; min-height: 60px; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-family: monospace;">${patternsText}</textarea>
+                                    <small style="color: #7f8c8d;">По одному паттерну на строку (например: *.log, *.txt)</small>
+                                </div>
+                                <div style="margin-bottom: 12px;">
+                                    <label><strong>Директории для поиска:</strong></label>
+                                    <textarea id="directories-${clientId}" style="width: 100%; min-height: 60px; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-family: monospace;">${directoriesText}</textarea>
+                                    <small style="color: #7f8c8d;">По одной директории на строку. Используйте "all" для поиска везде.</small>
+                                </div>
+                                <div style="margin-bottom: 12px;">
+                                    <label><strong>Максимальный размер файла (МБ):</strong></label>
+                                    <input type="number" id="maxsize-${clientId}" value="${config.max_file_size_mb}" style="width: 100px; padding: 6px; border: 1px solid #ddd; border-radius: 4px;">
+                                </div>
+                                <div style="margin-bottom: 12px;">
+                                    <label><strong>Интервал проверки команд (секунды):</strong></label>
+                                    <input type="number" id="interval-${clientId}" value="${config.scan_interval}" style="width: 100px; padding: 6px; border: 1px solid #ddd; border-radius: 4px;">
+                                </div>
+                                <button class="btn btn-success" onclick="saveConfig('${clientId}')">💾 Сохранить конфигурацию</button>
+                            </div>
+                        `;
+                    } catch (e) {
+                        configDiv.innerHTML = `<div class="empty-state">Ошибка загрузки конфигурации: ${e.message}</div>`;
+                    }
+                }
+
+                async function saveConfig(clientId) {
+                    const patterns = document.getElementById(`patterns-${clientId}`).value.split('\n').filter(p => p.trim());
+                    const directories = document.getElementById(`directories-${clientId}`).value.split('\n').filter(d => d.trim());
+                    const maxSize = parseInt(document.getElementById(`maxsize-${clientId}`).value);
+                    const interval = parseInt(document.getElementById(`interval-${clientId}`).value);
+
+                    try {
+                        const res = await fetch(`/client/${clientId}/config`, {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({
+                                client_id: clientId,
+                                search_patterns: patterns,
+                                search_directories: directories,
+                                max_file_size_mb: maxSize,
+                                scan_interval: interval
+                            })
+                        });
+                        
+                        if (res.ok) {
+                            alert('Конфигурация сохранена! Клиент получит новую конфигурацию при следующей проверке команд.');
+                            showConfig(clientId); // Обновляем отображение
+                        } else {
+                            alert('Ошибка сохранения конфигурации');
+                        }
+                    } catch (e) {
+                        alert('Ошибка: ' + e.message);
+                    }
+                }
+
+                function refreshAll() {
                     loadAllClients();
                     loadDownloadedFiles();
-                }, 12000);
+                }
+
+                // Загрузка при старте
+                refreshAll();
             </script>
         </body>
     </html>
