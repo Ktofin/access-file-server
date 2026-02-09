@@ -109,14 +109,20 @@ async def get_client_files(client_id: str):
 
 @app.get("/api/clients")
 async def get_all_clients():
+    """Получение списка всех клиентов"""
+    import json
+    print(f"DEBUG: Возвращаем клиентов: {json.dumps(clients_registry, indent=2)}")
     return {"clients": clients_registry}
 
 @app.post("/client/status")
 async def receive_client_status(status: ClientStatus):
+    """Получение статуса от клиента"""
     clients_registry[status.client_id] = {
         "ip": status.ip,
         "last_seen": datetime.now().isoformat()
     }
+    print(f"DEBUG: Клиент {status.client_id} зарегистрирован. IP: {status.ip}")
+    print(f"DEBUG: Всего клиентов: {len(clients_registry)}")
     return {"status": "ok"}
 
 @app.get("/client/{client_id}/config")
@@ -361,7 +367,7 @@ async def main_page():
                 function organizeFilesIntoTree(files) {
                     const tree = {};
                     files.forEach(file => {
-                        const parts = file.filepath.split(/[/\\\\]/);
+                        const parts = file.filepath.split(/[/\\]/);
                         let current = tree;
                         for (let i = 0; i < parts.length; i++) {
                             const part = parts[i];
@@ -421,7 +427,7 @@ async def main_page():
                             const fileDiv = document.createElement('div');
                             fileDiv.className = 'file-item';
                             fileDiv.style.paddingLeft = (level * 20 + 12) + 'px';
-                            const fileName = file.filepath.split(/[/\\\\]/).pop();
+                            const fileName = file.filepath.split(/[/\\]/).pop();
                             fileDiv.innerHTML = `
                                 <div class="file-info">
                                     <div class="file-path">📄 ${fileName}</div>
@@ -439,17 +445,23 @@ async def main_page():
                 }
 
                 async function loadAllClients() {
-                    const res = await fetch('/api/clients');
-                    const data = await res.json();
-                    const container = document.getElementById('clientsList');
-                    
-                    if (Object.keys(data.clients).length === 0) {
-                        container.innerHTML = '<p style="text-align:center; color:#7f8c8d;">Нет подключённых клиентов</p>';
-                        return;
-                    }
+                    try {
+                        const res = await fetch('/api/clients');
+                        if (!res.ok) {
+                            console.error('Ошибка загрузки клиентов:', res.status);
+                            return;
+                        }
+                        const data = await res.json();
+                        console.log('Получены данные клиентов:', data);
+                        const container = document.getElementById('clientsList');
+                        
+                        if (!data.clients || Object.keys(data.clients).length === 0) {
+                            container.innerHTML = '<p style="text-align:center; color:#7f8c8d;">Нет подключённых клиентов</p>';
+                            return;
+                        }
 
-                    container.innerHTML = '';
-                    for (const [clientId, info] of Object.entries(data.clients)) {
+                        container.innerHTML = '';
+                        for (const [clientId, info] of Object.entries(data.clients)) {
                         const div = document.createElement('div');
                         div.className = 'client-card';
                         div.innerHTML = `
@@ -473,6 +485,11 @@ async def main_page():
                             <div id="files-${clientId}" class="files-section" style="display:none;"></div>
                         `;
                         container.appendChild(div);
+                        }
+                    } catch (e) {
+                        console.error('Ошибка загрузки клиентов:', e);
+                        const container = document.getElementById('clientsList');
+                        container.innerHTML = '<p style="text-align:center; color:#e74c3c;">Ошибка загрузки клиентов: ' + e.message + '</p>';
                     }
                 }
 
@@ -756,11 +773,22 @@ async def main_page():
                 }
 
                 function refreshAll() {
+                    console.log('Обновление данных...');
                     loadAllClients();
                     loadDownloadedFiles();
                 }
 
+                // Обработка ошибок JavaScript
+                window.addEventListener('error', function(e) {
+                    console.error('JavaScript ошибка:', e.error);
+                    const container = document.getElementById('clientsList');
+                    if (container) {
+                        container.innerHTML = '<p style="text-align:center; color:#e74c3c;">Ошибка JavaScript: ' + e.message + '</p>';
+                    }
+                });
+
                 // Загрузка при старте
+                console.log('Инициализация страницы...');
                 refreshAll();
             </script>
         </body>
